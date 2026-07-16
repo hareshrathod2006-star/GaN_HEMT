@@ -1,0 +1,181 @@
+*----------------------------------------------------------------------*
+Device pGaNHEMT {
+*----------------------------------------------------------------------*
+Electrode{
+   { Name="source"  Voltage= 0.0  Resistor= 150 }
+   { Name="drain"   Voltage= 0.0  Resistor= 150 }
+   { Name="gate"    Voltage= 0.0 }
+   { Name="bulk"    Voltage= 0.0  Resistor= 1e3 }
+}
+File{
+   * Input Files
+   Grid=      "@tdr@"
+   Parameter= "@parameter@"
+   * Output Files
+   Current= "@plot@"
+   Plot=    "@tdrdat@"
+}
+Physics {
+   *--- Transport model: Hydrodynamic for hot-electron effects in GaN
+   Hydrodynamic( eTemperature )
+   Mobility(
+      eHighFieldSaturation
+      hHighFieldSaturation
+   )
+   EffectiveIntrinsicDensity( NoBandGapNarrowing )
+   Recombination(
+      SRH Auger Radiative
+   )
+}
+
+*--- Silicon substrate (p-type boron doped)
+Physics( Material="Silicon" ){
+   Mobility( Dopingdependence )
+}
+
+*--- AlN nucleation layer
+Physics( Material="AlN" ){
+   MoleFraction( xFraction= 1.0 Grading= 0 )
+   *--- Piezoelectric and spontaneous polarization handled via PMI or
+   *    built-in GaN polarization model in Sentaurus
+   Polarization
+}
+
+*--- AlGaN buffer layer  (Al mole fraction ~0.05, adjust to match your epi)
+Physics( Material="AlGaN" Region="AlGaNBuffer" ){
+   MoleFraction( xFraction= 0.05 Grading= 0 )
+   Polarization
+}
+
+*--- GaN buffer / channel - base material, no MoleFraction needed
+Physics( Material="GaN" Region="GaNBuffer" ){
+   Polarization
+   *--- Carbon deep-level traps acting as compensating acceptors
+   Traps(
+      (Acceptor   Conc= @NC@
+       EnergyMid= 0.9   fromValBand
+       eXsection= 1e-14
+       hXsection= 1e-13 )
+   )
+}
+Physics( Material="GaN" Region="Channel" ){
+   Polarization
+}
+
+*--- AlGaN barrier (Al mole fraction 0.22, adjust for your barrier design)
+Physics( Material="AlGaN" Region="Barrier" ){
+   MoleFraction( xFraction= 0.22 Grading= 0 )
+   Polarization
+}
+Physics( Material="AlGaN" Region="Barrier.l" ){
+   MoleFraction( xFraction= 0.22 Grading= 0 )
+   Polarization
+}
+Physics( Material="AlGaN" Region="Barrier.r" ){
+   MoleFraction( xFraction= 0.22 Grading= 0 )
+   Polarization
+}
+
+*--- p-GaN gate layer
+*    Mg-doped GaN, ohmic-like contact to Tungsten
+Physics( Material="GaN" Region="pGate" ){
+   Polarization
+}
+
+*----------------------------------------------------------------------*
+} *- End of Device{}
+*----------------------------------------------------------------------*
+
+File{
+   Output=   "@log@"
+   ACExtract= "@acplot@"
+}
+
+System {
+   pGaNHEMT hemt ( gate=1 drain=2 source=0 bulk=0 )
+   Vsource_pset vg ( 1 0 ) { dc= 0 }
+   Vsource_pset vd ( 2 0 ) { dc= 0 }
+#if @Rfb@ != 0
+   Resistor_pset Rfb (1 2) { resistance= @Rfb@ }
+#endif
+}
+
+Plot{
+*-- Density and Currents
+   eDensity hDensity
+   TotalCurrent/Vector eCurrent/Vector hCurrent/Vector
+   eMobility hMobility
+   eVelocity hVelocity
+   eQuasiFermi hQuasiFermi
+*-- Temperature
+   eTemperature
+*-- Fields and Charges
+   ElectricField/Vector Potential SpaceCharge
+*-- Doping Profiles
+   Doping DonorConcentration AcceptorConcentration
+*-- Generation / Recombination
+   SRH Auger
+   AvalancheGeneration eAvalancheGeneration hAvalancheGeneration
+*-- Driving Forces
+   eGradQuasiFermi/Vector hGradQuasiFermi/Vector
+   eEparallel hEparallel
+*-- Band Structure / Composition
+   BandGap
+   Affinity
+   ConductionBand ValenceBand
+   xMoleFraction
+*-- Polarization
+   PolarizationCharge
+*-- Traps
+   eTrappedCharge hTrappedCharge
+   eGapStatesRecombination hGapStatesRecombination
+*-- PMI User Field (used for C-doping SFactor)
+   PMIUserfield1
+}
+
+Math{
+   Extrapolate
+   Digits=    5
+   Notdamped= 50
+   Iterations= 15
+   RelErrControl
+   ErrRef(Electron) = 1e7
+   ErrRef(Hole)     = 1e4
+   RelTermMinDensity=     1e4
+   RelTermMinDensityZero= 1e7
+   Number_of_Threads= 4
+   Method=    Blocked  SubMethod=   Pardiso
+   ACMethod=  Blocked  ACSubMethod= Pardiso
+}
+
+Solve{
+*--- Initial Solution
+   NewCurrentPrefix= "Init_"
+   Coupled( Iterations= 100 ){ Poisson }
+   Coupled { Poisson Electron Hole }
+   Coupled { Poisson Electron Hole eTemperature }
+
+*--- Ramp drain to Vd, gate to Vgmin
+   Quasistationary(
+      InitialStep= 0.01  Increment= 1.4
+      MinStep= 1e-6      MaxStep=   0.25
+      Goal{ Parameter= vg.dc Voltage= @Vgmin@ }
+      Goal{ Parameter= vd.dc Voltage= @Vd@ }
+   ){ Coupled{ Poisson Electron Hole eTemperature } }
+
+*--- AC analysis: Ramp Gate from Vgmin to Vgmax
+   NewCurrentPrefix= ""
+   Quasistationary(
+      InitialStep= 0.1   Increment= 1.25
+      MinStep= 1e-6      MaxStep=   0.05
+      DoZero
+      Goal{ Parameter= vg.dc Voltage= @Vgmax@ }
+   ){ ACCoupled(
+         StartFrequency= 1e8   EndFrequency= 1e12
+         NumberOfPoints= @<nPerDecade*4+1>@  Decade
+         Node(1 2)  Exclude(vg vd)
+         ACCompute( Time=(Range=(0 1) Intervals= 20) )
+      ){ Poisson Electron Hole eTemperature }
+      CurrentPlot( Time=(Range=(0 1) Intervals= 20) )
+   }
+}
